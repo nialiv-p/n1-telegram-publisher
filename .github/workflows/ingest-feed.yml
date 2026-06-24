@@ -1,0 +1,37 @@
+name: Ingest N1 feed
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: n1-feed-ingestion
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Fetch N1 RSS feed
+        run: >-
+          curl --fail --silent --show-error --location
+          --retry 3 --retry-all-errors --max-time 30
+          https://n1info.rs/feed/ --output /tmp/n1-feed.xml
+
+      - name: Send feed to Worker
+        env:
+          INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
+          WORKER_URL: https://n1-telegram-publisher.n1newsfetcher.workers.dev
+        run: >-
+          curl --fail-with-body --silent --show-error
+          --retry 3 --retry-all-errors --max-time 60
+          --request POST
+          --header "Authorization: Bearer ${INGEST_SECRET}"
+          --header "Content-Type: application/rss+xml"
+          --data-binary @/tmp/n1-feed.xml
+          "${WORKER_URL}/ingest"

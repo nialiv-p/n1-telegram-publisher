@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { runScheduled } from "../src/service";
+import { ingestFeed } from "../src/service";
 import type { Env } from "../src/types";
 import { feedXml, MemoryRepository } from "./helpers";
 
@@ -14,21 +14,21 @@ const env = {
 describe("scheduled service", () => {
   it("seeds the first feed without publishing", async () => {
     const repository = new MemoryRepository();
-    const fetchImpl = vi.fn(async () => xmlResponse(oneArticleFeed())) as unknown as typeof fetch;
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
 
-    await runScheduled(env, dependencies(repository, fetchImpl));
+    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
 
     expect(repository.articles.get(ARTICLE_URL)?.status).toBe("seeded");
     expect(repository.state.get("initialized_at")).toBe(NOW.toISOString());
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("publishes new articles once and records the message ID", async () => {
     const repository = initializedRepository();
     const fetchImpl = routeFetch({ telegramMessageId: 123 });
 
-    await runScheduled(env, dependencies(repository, fetchImpl));
-    await runScheduled(env, dependencies(repository, fetchImpl));
+    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
+    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
 
     expect(repository.articles.get(ARTICLE_URL)).toMatchObject({
       status: "sent",
@@ -36,13 +36,11 @@ describe("scheduled service", () => {
     });
     expect(telegramCalls(fetchImpl)).toHaveLength(1);
   });
-
-
   it("falls back to sendMessage when Telegram rejects the photo", async () => {
     const repository = initializedRepository();
     const fetchImpl = routeFetch({ rejectPhoto: true, telegramMessageId: 456 });
 
-    await runScheduled(env, dependencies(repository, fetchImpl));
+    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
 
     const calls = telegramCalls(fetchImpl).map(([input]) => String(input));
     expect(calls).toEqual([
@@ -56,7 +54,7 @@ describe("scheduled service", () => {
     const repository = initializedRepository();
     const fetchImpl = routeFetch({ telegramMessageId: 789 });
 
-    await runScheduled(env, dependencies(repository, fetchImpl));
+    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
 
     const telegramCall = telegramCalls(fetchImpl)[0];
     const body = JSON.parse(String(telegramCall?.[1]?.body)) as {
@@ -65,14 +63,14 @@ describe("scheduled service", () => {
     };
     expect(body.caption ?? body.text).toContain("Kratak opis");
     expect(repository.articles.get(ARTICLE_URL)?.status).toBe("sent");
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("honors Telegram retry_after and fails permanently after five attempts", async () => {
     const repository = initializedRepository();
     const fetchImpl = routeFetch({ rateLimited: true });
 
-    await runScheduled(env, dependencies(repository, fetchImpl));
+    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
     expect(repository.articles.get(ARTICLE_URL)).toMatchObject({
       status: "retry",
       attempts: 1,
@@ -85,7 +83,7 @@ describe("scheduled service", () => {
     article.attempts = 4;
     article.nextAttemptAt = null;
 
-    await runScheduled(env, dependencies(repository, fetchImpl));
+    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
     expect(repository.articles.get(ARTICLE_URL)).toMatchObject({
       status: "failed",
       attempts: 5,
@@ -100,9 +98,9 @@ describe("scheduled service", () => {
       title: `Article ${index}`,
       publicationDate: new Date(NOW.getTime() + index * 1000).toISOString(),
     }));
-    const fetchImpl = routeFetch({ feed: feedXml(entries), telegramMessageId: 100 });
+    const fetchImpl = routeFetch({ telegramMessageId: 100 });
 
-    await runScheduled(env, dependencies(repository, fetchImpl));
+    await ingestFeed(env, feedXml(entries), dependencies(repository, fetchImpl));
 
     const sent = [...repository.articles.values()].filter((article) => article.status === "sent");
     const pending = [...repository.articles.values()].filter((article) => article.status === "pending");
@@ -111,25 +109,13 @@ describe("scheduled service", () => {
     expect(sent[0]?.title).toBe("Article 0");
   });
 
-  it("backs off without throwing when N1 returns 403", async () => {
-    const repository = initializedRepository();
-    const fetchImpl = vi.fn(async () => new Response("Forbidden", { status: 403 })) as unknown as typeof fetch;
-
-    await runScheduled(env, dependencies(repository, fetchImpl));
-    await runScheduled(env, dependencies(repository, fetchImpl));
-
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(repository.state.get("sitemap_retry_attempts")).toBe("1");
-    expect(repository.state.get("sitemap_retry_at")).toBe("2026-06-24T12:15:00.000Z");
-  });
-
   it("does not mutate state when the feed is malformed", async () => {
     const repository = initializedRepository();
-    const fetchImpl = vi.fn(async () => xmlResponse("<invalid />")) as unknown as typeof fetch;
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
 
-    await expect(runScheduled(env, dependencies(repository, fetchImpl))).rejects.toThrow(
-      /rss\/item is missing/,
-    );
+    await expect(
+      ingestFeed(env, "<invalid />", dependencies(repository, fetchImpl)),
+    ).rejects.toThrow(/rss\/item is missing/);
     expect(repository.articles).toHaveLength(0);
     expect(repository.state.get("last_run_at")).toBeUndefined();
   });
@@ -138,7 +124,7 @@ describe("scheduled service", () => {
     const repository = initializedRepository();
     const fetchImpl = routeFetch({ telegramNetworkError: true });
 
-    await runScheduled(env, dependencies(repository, fetchImpl));
+    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
 
     expect(repository.articles.get(ARTICLE_URL)).toMatchObject({ status: "retry", attempts: 1 });
   });
@@ -147,7 +133,7 @@ describe("scheduled service", () => {
     const repository = initializedRepository();
     const fetchImpl = routeFetch({ telegramServerError: true });
 
-    await runScheduled(env, dependencies(repository, fetchImpl));
+    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
 
     expect(repository.articles.get(ARTICLE_URL)).toMatchObject({ status: "retry", attempts: 1 });
   });
@@ -181,7 +167,6 @@ function oneArticleFeed(): string {
 }
 
 interface FetchOptions {
-  feed?: string;
   rejectPhoto?: boolean;
   rateLimited?: boolean;
   telegramNetworkError?: boolean;
@@ -192,9 +177,6 @@ interface FetchOptions {
 function routeFetch(options: FetchOptions): ReturnType<typeof vi.fn> {
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url === "https://n1info.rs/feed/") {
-      return xmlResponse(options.feed ?? oneArticleFeed());
-    }
     if (url.startsWith("https://n1info.rs/")) {
       throw new Error(`Unexpected article-page request: ${url}`);
     }
@@ -228,11 +210,4 @@ function routeFetch(options: FetchOptions): ReturnType<typeof vi.fn> {
 
 function telegramCalls(fetchImpl: ReturnType<typeof vi.fn>) {
   return fetchImpl.mock.calls.filter(([input]) => String(input).includes("api.telegram.org"));
-}
-
-function xmlResponse(xml: string): Response {
-  return new Response(xml, {
-    status: 200,
-    headers: { "Content-Type": "application/xml" },
-  });
 }

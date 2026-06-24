@@ -1,4 +1,4 @@
-import { FEED_URL, parseFeed } from "./feed";
+import { parseFeed } from "./feed";
 import { buildTelegramContent } from "./format";
 import { D1ArticleRepository } from "./repository";
 import { publishToTelegram, TelegramError } from "./telegram";
@@ -7,10 +7,6 @@ import type { ArticleRepository, Env, NewsArticle } from "./types";
 const MAX_ARTICLES_PER_RUN = 1;
 const MAX_ATTEMPTS = 5;
 const STALE_SENDING_AFTER_MS = 10 * 60 * 1000;
-const STATE_FEED_RETRY_AT = "sitemap_retry_at";
-const STATE_FEED_RETRY_ATTEMPTS = "sitemap_retry_attempts";
-const THROTTLE_BASE_DELAY_MS = 5 * 60 * 1000;
-const THROTTLE_MAX_DELAY_MS = 30 * 60 * 1000;
 
 export interface ServiceDependencies {
   repository: ArticleRepository;
@@ -19,8 +15,9 @@ export interface ServiceDependencies {
   sleep: (milliseconds: number) => Promise<void>;
 }
 
-export async function runScheduled(
+export async function ingestFeed(
   env: Env,
+  feed: string,
   overrides: Partial<ServiceDependencies> = {},
 ): Promise<void> {
   validateConfiguration(env);
@@ -31,24 +28,7 @@ export async function runScheduled(
     sleep: overrides.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))),
   };
 
-  const runDate = dependencies.now();
-  const runAt = runDate.toISOString();
-  const retryAt = await dependencies.repository.getState(STATE_FEED_RETRY_AT);
-  if (retryAt && Date.parse(retryAt) > runDate.getTime()) {
-    log("info", "feed_cooldown_active", { retryAt });
-    return;
-  }
-
-  let feed: string;
-  try {
-    feed = await fetchNewsFeed(dependencies.fetchImpl);
-  } catch (error) {
-    if (error instanceof FeedHttpError && (error.status === 403 || error.status === 429)) {
-      await scheduleFeedRetry(dependencies.repository, error, runDate);
-      return;
-    }
-    throw error;
-  }
+  const runAt = dependencies.now().toISOString();
   const entries = parseFeed(feed);
   const initializedAt = await dependencies.repository.getState("initialized_at");
 
@@ -90,7 +70,7 @@ export async function runScheduled(
 
   const completedAt = dependencies.now().toISOString();
   await dependencies.repository.markRunSuccessful(completedAt);
-  log("info", "scheduled_run_completed", { discovered: entries.length, processed: ready.length });
+  log("info", "feed_ingestion_completed", { discovered: entries.length, processed: ready.length });
 }
 
 async function publishArticle(
@@ -106,58 +86,6 @@ async function publishArticle(
     article.imageUrl,
     fetchImpl,
   );
-}
-
-async function fetchNewsFeed(fetchImpl: typeof fetch): Promise<string> {
-  const response = await fetchImpl(FEED_URL, {
-    headers: {
-      Accept: "application/rss+xml,application/xml,text/xml",
-      "User-Agent": "N1TelegramPublisher/1.0 (+https://workers.dev)",
-    },
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!response.ok) {
-    throw new FeedHttpError(response.status, parseRetryAfter(response.headers.get("retry-after")));
-  }
-  return response.text();
-}
-
-class FeedHttpError extends Error {
-  constructor(
-    readonly status: number,
-    readonly retryAfterMilliseconds?: number,
-  ) {
-    super(`N1 feed returned HTTP ${status}`);
-    this.name = "FeedHttpError";
-  }
-}
-
-async function scheduleFeedRetry(
-  repository: ArticleRepository,
-  error: FeedHttpError,
-  now: Date,
-): Promise<void> {
-  const previousAttempts = Number.parseInt(
-    (await repository.getState(STATE_FEED_RETRY_ATTEMPTS)) ?? "0",
-    10,
-  );
-  const attempts = Number.isFinite(previousAttempts) ? previousAttempts + 1 : 1;
-  const exponentialDelay = Math.min(
-    THROTTLE_BASE_DELAY_MS * 2 ** (attempts - 1),
-    THROTTLE_MAX_DELAY_MS,
-  );
-  const delay = error.retryAfterMilliseconds ?? exponentialDelay;
-  const retryAt = new Date(now.getTime() + delay).toISOString();
-  await repository.markFeedThrottled(retryAt, attempts);
-  log("warn", "feed_throttled", { status: error.status, attempts, retryAt });
-}
-
-function parseRetryAfter(value: string | null): number | undefined {
-  if (!value) return undefined;
-  const seconds = Number.parseInt(value, 10);
-  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
-  const date = Date.parse(value);
-  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
 }
 
 async function recordFailure(
@@ -196,7 +124,7 @@ function validateConfiguration(env: Env): void {
 }
 
 function log(
-  level: "info" | "warn" | "error",
+  level: "info" | "error",
   event: string,
   details: Record<string, unknown>,
 ): void {

@@ -8,6 +8,7 @@ describe("HTTP interface", () => {
       DB: healthDatabase(),
       TELEGRAM_BOT_TOKEN: "must-not-leak",
       TELEGRAM_CHANNEL_ID: "@channel",
+      INGEST_SECRET: "ingest-secret",
     } as Env;
 
     const response = await worker.fetch?.(
@@ -22,7 +23,6 @@ describe("HTTP interface", () => {
       initializedAt: "2026-06-24T12:00:00.000Z",
       lastRunAt: "2026-06-24T12:10:00.000Z",
       lastSuccessfulRunAt: "2026-06-24T12:10:00.000Z",
-      feedRetryAt: null,
       pending: 2,
       retry: 1,
       failed: 3,
@@ -36,6 +36,29 @@ describe("HTTP interface", () => {
       {} as Env,
     );
     expect(response?.status).toBe(404);
+  });
+
+  it("rejects unauthenticated feed ingestion", async () => {
+    const response = await worker.fetch?.(
+      new Request("https://worker.example/ingest", { method: "POST", body: "<rss/>" }),
+      { INGEST_SECRET: "ingest-secret" } as Env,
+    );
+    expect(response?.status).toBe(401);
+  });
+
+  it("rejects oversized feed ingestion before reading D1", async () => {
+    const response = await worker.fetch?.(
+      new Request("https://worker.example/ingest", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer ingest-secret",
+          "Content-Length": "1000001",
+        },
+        body: "<rss/>",
+      }),
+      { INGEST_SECRET: "ingest-secret" } as Env,
+    );
+    expect(response?.status).toBe(413);
   });
 });
 

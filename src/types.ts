@@ -13,6 +13,7 @@ export interface Env {
   DB: D1Database;
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_CHANNEL_ID: string;
+  INGEST_SECRET: string;
 }
 
 export interface NewsArticle {
@@ -29,17 +30,10 @@ export interface StoredArticle extends NewsArticle {
   attempts: number;
 }
 
-export interface ArticleMetadata {
-  title?: string;
-  description?: string;
-  imageUrl?: string;
-}
-
 export interface HealthSnapshot {
   initializedAt: string | null;
   lastRunAt: string | null;
   lastSuccessfulRunAt: string | null;
-  feedRetryAt: string | null;
   pending: number;
   retry: number;
   failed: number;
@@ -62,6 +56,5 @@ export interface ArticleRepository {
     now: string,
   ): Promise<void>;
   markRunSuccessful(now: string): Promise<void>;
-  markFeedThrottled(retryAt: string, attempts: number): Promise<void>;
   health(): Promise<HealthSnapshot>;
 }

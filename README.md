@@ -1,6 +1,8 @@
 # N1 → Telegram
 
-Cloudflare Worker проверяет публичную RSS-ленту `n1info.rs/feed/` каждую минуту и публикует новые сербоязычные статьи в Telegram-канале. Первый запуск только запоминает текущие статьи, поэтому старые новости не заполнят канал.
+GitHub Actions загружает публичную RSS-ленту `n1info.rs/feed/` каждые пять минут и передаёт её в защищённый endpoint Cloudflare Worker. Worker находит новые сербоязычные статьи, хранит состояние в D1 и публикует их в Telegram-канале. Первый запуск только запоминает текущие статьи, поэтому старые новости не заполнят канал.
+
+Такое разделение необходимо, потому что N1 блокирует исходящие запросы сети Cloudflare Workers. Worker сам не обращается к N1; GitHub Actions передаёт ему готовый RSS по HTTPS с общим секретом.
 
 ## Что публикуется
 
@@ -36,6 +38,19 @@ npx wrangler d1 migrations apply n1-telegram-publisher --remote
 npx wrangler secret put TELEGRAM_BOT_TOKEN
 ```
 
+Создайте случайный секрет для endpoint `/ingest`:
+
+```bash
+openssl rand -hex 32
+```
+
+Скопируйте полученное значение и введите **одинаковое значение** в обе команды:
+
+```bash
+npx wrangler secret put INGEST_SECRET
+gh secret set INGEST_SECRET
+```
+
 Перед публикацией выполните проверки и deployment:
 
 ```bash
@@ -44,7 +59,13 @@ npm run typecheck
 npm run deploy
 ```
 
-После deployment дождитесь первого минутного запуска. Он заполнит D1 статусом `seeded`, но ничего не отправит. Следующая подходящая статья будет опубликована автоматически.
+После deployment отправьте workflow в первый ручной запуск:
+
+```bash
+gh workflow run ingest-feed.yml
+```
+
+Дальше workflow запускается автоматически каждые пять минут. На чистой D1 первый запуск заполнит записи статусом `seeded`, но ничего не отправит. Следующая подходящая статья будет опубликована автоматически.
 
 ## Локальная проверка
 
@@ -53,6 +74,7 @@ npm run deploy
 ```dotenv
 TELEGRAM_BOT_TOKEN=your_test_token
 TELEGRAM_CHANNEL_ID=@your_test_channel
+INGEST_SECRET=your_local_ingest_secret
 ```
 
 Примените миграцию к локальной D1 и запустите Worker:
@@ -62,7 +84,17 @@ npx wrangler d1 migrations apply n1-telegram-publisher --local
 npm run dev
 ```
 
-Локальный scheduled handler можно вызвать через URL, который Wrangler покажет для `--test-scheduled`. Используйте отдельный тестовый канал, поскольку вызов действительно отправляет сообщения.
+Передайте RSS в локальный Worker отдельной командой:
+
+```bash
+curl -fsSL https://n1info.rs/feed/ -o /tmp/n1-feed.xml
+curl -X POST http://localhost:8787/ingest \
+  -H "Authorization: Bearer your_local_ingest_secret" \
+  -H "Content-Type: application/rss+xml" \
+  --data-binary @/tmp/n1-feed.xml
+```
+
+Используйте отдельный тестовый канал, поскольку запрос действительно может отправить сообщение.
 
 ## Состояние и диагностика
 
@@ -74,7 +106,6 @@ npm run dev
   "initializedAt": "2026-06-24T12:00:00.000Z",
   "lastRunAt": "2026-06-24T12:10:00.000Z",
   "lastSuccessfulRunAt": "2026-06-24T12:10:00.000Z",
-  "feedRetryAt": null,
   "pending": 0,
   "retry": 0,
   "failed": 0
@@ -97,9 +128,9 @@ npx wrangler d1 execute n1-telegram-publisher --remote --command "UPDATE article
 
 ## Поведение при сбоях
 
-- Недоступная RSS-лента не изменяет очередь.
+- Если GitHub Actions не смог загрузить RSS, Worker не вызывается и очередь не изменяется.
 - Описание и изображение берутся непосредственно из RSS, поэтому Worker не загружает HTML-страницы статей.
 - За один запуск отправляется не более одной статьи, от старых к новым. Это не создаёт всплеск запросов к N1 при обработке backlog.
-- При ответе N1 `403` или `429` Worker включает увеличивающийся cooldown от 5 до 30 минут и завершает cron без необработанного исключения.
+- `/ingest` принимает только запросы с правильным `INGEST_SECRET` и ограничивает RSS размером 1 МБ.
 - Уже известный нормализованный URL повторно не публикуется.
 - После неоднозначного сетевого сбоя отправка повторяется. Это предотвращает потерю новости, но в редком случае Telegram мог принять первый запрос и создать дубль.

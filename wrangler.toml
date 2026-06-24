@@ -3,9 +3,6 @@ main = "src/index.ts"
 compatibility_date = "2026-06-24"
 workers_dev = true
 
-[triggers]
-crons = ["* * * * *"]
-
 [[d1_databases]]
 binding = "DB"
 database_name = "n1-telegram-publisher"
