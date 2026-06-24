@@ -4,7 +4,7 @@ import { D1ArticleRepository } from "./repository";
 import { publishToTelegram, TelegramError } from "./telegram";
 import type { ArticleRepository, Env, NewsArticle } from "./types";
 
-const MAX_ARTICLES_PER_RUN = 1;
+const MAX_ARTICLES_PER_RUN = 10;
 const MAX_ATTEMPTS = 5;
 const STALE_SENDING_AFTER_MS = 10 * 60 * 1000;
 

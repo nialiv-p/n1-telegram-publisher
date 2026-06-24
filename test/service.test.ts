@@ -91,7 +91,7 @@ describe("scheduled service", () => {
     });
   });
 
-  it("processes one backlog entry per run to avoid origin throttling", async () => {
+  it("processes at most ten backlog entries from oldest to newest", async () => {
     const repository = initializedRepository();
     const entries = Array.from({ length: 12 }, (_, index) => ({
       url: `https://n1info.rs/vesti/article-${index}/`,
@@ -104,9 +104,11 @@ describe("scheduled service", () => {
 
     const sent = [...repository.articles.values()].filter((article) => article.status === "sent");
     const pending = [...repository.articles.values()].filter((article) => article.status === "pending");
-    expect(sent).toHaveLength(1);
-    expect(pending).toHaveLength(11);
-    expect(sent[0]?.title).toBe("Article 0");
+    expect(sent).toHaveLength(10);
+    expect(pending).toHaveLength(2);
+    expect(sent.map((article) => article.title)).toEqual(
+      Array.from({ length: 10 }, (_, index) => `Article ${index}`),
+    );
   });
 
   it("does not mutate state when the feed is malformed", async () => {
