@@ -37,6 +37,7 @@ export interface HealthSnapshot {
   initializedAt: string | null;
   lastRunAt: string | null;
   lastSuccessfulRunAt: string | null;
+  sitemapRetryAt: string | null;
   pending: number;
   retry: number;
   failed: number;
@@ -59,5 +60,6 @@ export interface ArticleRepository {
     now: string,
   ): Promise<void>;
   markRunSuccessful(now: string): Promise<void>;
+  markSitemapThrottled(retryAt: string, attempts: number): Promise<void>;
   health(): Promise<HealthSnapshot>;
 }

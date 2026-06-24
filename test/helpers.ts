@@ -78,6 +78,13 @@ export class MemoryRepository implements ArticleRepository {
   async markRunSuccessful(now: string): Promise<void> {
     this.state.set("last_run_at", now);
     this.state.set("last_successful_run_at", now);
+    this.state.set("sitemap_retry_at", "");
+    this.state.set("sitemap_retry_attempts", "0");
+  }
+
+  async markSitemapThrottled(retryAt: string, attempts: number): Promise<void> {
+    this.state.set("sitemap_retry_at", retryAt);
+    this.state.set("sitemap_retry_attempts", String(attempts));
   }
 
   async health(): Promise<HealthSnapshot> {
@@ -87,6 +94,7 @@ export class MemoryRepository implements ArticleRepository {
       initializedAt: this.state.get("initialized_at") ?? null,
       lastRunAt: this.state.get("last_run_at") ?? null,
       lastSuccessfulRunAt: this.state.get("last_successful_run_at") ?? null,
+      sitemapRetryAt: this.state.get("sitemap_retry_at") || null,
       pending: count("pending"),
       retry: count("retry"),
       failed: count("failed"),

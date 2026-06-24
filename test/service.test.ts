@@ -89,7 +89,7 @@ describe("scheduled service", () => {
     });
   });
 
-  it("processes at most ten backlog entries from oldest to newest", async () => {
+  it("processes one backlog entry per run to avoid origin throttling", async () => {
     const repository = initializedRepository();
     const entries = Array.from({ length: 12 }, (_, index) => ({
       url: `https://n1info.rs/vesti/article-${index}/`,
@@ -102,11 +102,21 @@ describe("scheduled service", () => {
 
     const sent = [...repository.articles.values()].filter((article) => article.status === "sent");
     const pending = [...repository.articles.values()].filter((article) => article.status === "pending");
-    expect(sent).toHaveLength(10);
-    expect(pending).toHaveLength(2);
-    expect(sent.map((article) => article.title)).toEqual(
-      Array.from({ length: 10 }, (_, index) => `Article ${index}`),
-    );
+    expect(sent).toHaveLength(1);
+    expect(pending).toHaveLength(11);
+    expect(sent[0]?.title).toBe("Article 0");
+  });
+
+  it("backs off without throwing when N1 returns 403", async () => {
+    const repository = initializedRepository();
+    const fetchImpl = vi.fn(async () => new Response("Forbidden", { status: 403 })) as unknown as typeof fetch;
+
+    await runScheduled(env, dependencies(repository, fetchImpl));
+    await runScheduled(env, dependencies(repository, fetchImpl));
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(repository.state.get("sitemap_retry_attempts")).toBe("1");
+    expect(repository.state.get("sitemap_retry_at")).toBe("2026-06-24T12:15:00.000Z");
   });
 
   it("does not mutate state when the sitemap is malformed", async () => {

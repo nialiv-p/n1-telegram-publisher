@@ -5,9 +5,13 @@ import { parseSitemap, SITEMAP_URL } from "./sitemap";
 import { publishToTelegram, TelegramError } from "./telegram";
 import type { ArticleRepository, Env, SitemapArticle } from "./types";
 
-const MAX_ARTICLES_PER_RUN = 10;
+const MAX_ARTICLES_PER_RUN = 1;
 const MAX_ATTEMPTS = 5;
 const STALE_SENDING_AFTER_MS = 10 * 60 * 1000;
+const STATE_SITEMAP_RETRY_AT = "sitemap_retry_at";
+const STATE_SITEMAP_RETRY_ATTEMPTS = "sitemap_retry_attempts";
+const THROTTLE_BASE_DELAY_MS = 5 * 60 * 1000;
+const THROTTLE_MAX_DELAY_MS = 30 * 60 * 1000;
 
 export interface ServiceDependencies {
   repository: ArticleRepository;
@@ -28,8 +32,24 @@ export async function runScheduled(
     sleep: overrides.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))),
   };
 
-  const sitemap = await fetchSitemap(dependencies.fetchImpl);
-  const runAt = dependencies.now().toISOString();
+  const runDate = dependencies.now();
+  const runAt = runDate.toISOString();
+  const retryAt = await dependencies.repository.getState(STATE_SITEMAP_RETRY_AT);
+  if (retryAt && Date.parse(retryAt) > runDate.getTime()) {
+    log("info", "sitemap_cooldown_active", { retryAt });
+    return;
+  }
+
+  let sitemap: string;
+  try {
+    sitemap = await fetchSitemap(dependencies.fetchImpl);
+  } catch (error) {
+    if (error instanceof SitemapHttpError && (error.status === 403 || error.status === 429)) {
+      await scheduleSitemapRetry(dependencies.repository, error, runDate);
+      return;
+    }
+    throw error;
+  }
   const entries = parseSitemap(sitemap);
   const initializedAt = await dependencies.repository.getState("initialized_at");
 
@@ -100,9 +120,47 @@ async function fetchSitemap(fetchImpl: typeof fetch): Promise<string> {
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) {
-    throw new Error(`Sitemap returned HTTP ${response.status}`);
+    throw new SitemapHttpError(response.status, parseRetryAfter(response.headers.get("retry-after")));
   }
   return response.text();
+}
+
+class SitemapHttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly retryAfterMilliseconds?: number,
+  ) {
+    super(`Sitemap returned HTTP ${status}`);
+    this.name = "SitemapHttpError";
+  }
+}
+
+async function scheduleSitemapRetry(
+  repository: ArticleRepository,
+  error: SitemapHttpError,
+  now: Date,
+): Promise<void> {
+  const previousAttempts = Number.parseInt(
+    (await repository.getState(STATE_SITEMAP_RETRY_ATTEMPTS)) ?? "0",
+    10,
+  );
+  const attempts = Number.isFinite(previousAttempts) ? previousAttempts + 1 : 1;
+  const exponentialDelay = Math.min(
+    THROTTLE_BASE_DELAY_MS * 2 ** (attempts - 1),
+    THROTTLE_MAX_DELAY_MS,
+  );
+  const delay = error.retryAfterMilliseconds ?? exponentialDelay;
+  const retryAt = new Date(now.getTime() + delay).toISOString();
+  await repository.markSitemapThrottled(retryAt, attempts);
+  log("warn", "sitemap_throttled", { status: error.status, attempts, retryAt });
+}
+
+function parseRetryAfter(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number.parseInt(value, 10);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
 }
 
 async function recordFailure(
@@ -140,6 +198,10 @@ function validateConfiguration(env: Env): void {
   }
 }
 
-function log(level: "info" | "error", event: string, details: Record<string, unknown>): void {
+function log(
+  level: "info" | "warn" | "error",
+  event: string,
+  details: Record<string, unknown>,
+): void {
   console[level](JSON.stringify({ level, event, ...details }));
 }

@@ -8,6 +8,8 @@ import type {
 const STATE_INITIALIZED_AT = "initialized_at";
 const STATE_LAST_RUN_AT = "last_run_at";
 const STATE_LAST_SUCCESSFUL_RUN_AT = "last_successful_run_at";
+const STATE_SITEMAP_RETRY_AT = "sitemap_retry_at";
+const STATE_SITEMAP_RETRY_ATTEMPTS = "sitemap_retry_attempts";
 const URL_LOOKUP_BATCH_SIZE = 75;
 const ROWS_PER_INSERT = 10;
 const STATEMENTS_PER_BATCH = 25;
@@ -44,6 +46,8 @@ export class D1ArticleRepository implements ArticleRepository {
       stateStatement(this.db, STATE_INITIALIZED_AT, now),
       stateStatement(this.db, STATE_LAST_RUN_AT, now),
       stateStatement(this.db, STATE_LAST_SUCCESSFUL_RUN_AT, now),
+      stateStatement(this.db, STATE_SITEMAP_RETRY_AT, ""),
+      stateStatement(this.db, STATE_SITEMAP_RETRY_ATTEMPTS, "0"),
     ];
     await this.db.batch(statements);
   }
@@ -142,15 +146,25 @@ export class D1ArticleRepository implements ArticleRepository {
     const statements = [
       stateStatement(this.db, STATE_LAST_RUN_AT, now),
       stateStatement(this.db, STATE_LAST_SUCCESSFUL_RUN_AT, now),
+      stateStatement(this.db, STATE_SITEMAP_RETRY_AT, ""),
+      stateStatement(this.db, STATE_SITEMAP_RETRY_ATTEMPTS, "0"),
     ];
     await this.db.batch(statements);
   }
 
+  async markSitemapThrottled(retryAt: string, attempts: number): Promise<void> {
+    await this.db.batch([
+      stateStatement(this.db, STATE_SITEMAP_RETRY_AT, retryAt),
+      stateStatement(this.db, STATE_SITEMAP_RETRY_ATTEMPTS, String(attempts)),
+    ]);
+  }
+
   async health(): Promise<HealthSnapshot> {
-    const [initializedAt, lastRunAt, lastSuccessfulRunAt, counts] = await Promise.all([
+    const [initializedAt, lastRunAt, lastSuccessfulRunAt, sitemapRetryAt, counts] = await Promise.all([
       this.getState(STATE_INITIALIZED_AT),
       this.getState(STATE_LAST_RUN_AT),
       this.getState(STATE_LAST_SUCCESSFUL_RUN_AT),
+      this.getState(STATE_SITEMAP_RETRY_AT),
       this.db
         .prepare(
           `SELECT
@@ -165,6 +179,7 @@ export class D1ArticleRepository implements ArticleRepository {
       initializedAt,
       lastRunAt,
       lastSuccessfulRunAt,
+      sitemapRetryAt: sitemapRetryAt || null,
       pending: Number(counts?.pending ?? 0),
       retry: Number(counts?.retry ?? 0),
       failed: Number(counts?.failed ?? 0),
