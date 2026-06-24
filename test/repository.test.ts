@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { D1ArticleRepository } from "../src/repository";
-import type { SitemapArticle } from "../src/types";
+import type { NewsArticle } from "../src/types";
 
 describe("D1 repository batching", () => {
   it("looks up existing URLs and inserts only unknown articles", async () => {
@@ -29,7 +29,7 @@ describe("D1 repository batching", () => {
 
     const inserts = database.statements.filter((statement) => statement.sql.includes("INSERT OR IGNORE"));
     expect(inserts).toHaveLength(3);
-    expect(inserts.map((statement) => statement.values.length)).toEqual([70, 70, 21]);
+    expect(inserts.map((statement) => statement.values.length)).toEqual([90, 90, 27]);
   });
 });
 
@@ -66,11 +66,13 @@ function fakeDatabase(knownUrls = new Set<string>()) {
   return { db: db as unknown as D1Database, statements };
 }
 
-function article(url: string, offset: number): SitemapArticle {
+function article(url: string, offset: number): NewsArticle {
   return {
     url,
     title: `Article ${offset}`,
     publicationDate: new Date(Date.UTC(2026, 5, 24, 12, 0, offset)).toISOString(),
     section: "vesti",
+    description: `Description ${offset}`,
+    imageUrl: `https://n1info.rs/image-${offset}.jpg`,
   };
 }

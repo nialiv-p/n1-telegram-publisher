@@ -1,15 +1,15 @@
 import type {
   ArticleRepository,
   HealthSnapshot,
-  SitemapArticle,
+  NewsArticle,
   StoredArticle,
 } from "./types";
 
 const STATE_INITIALIZED_AT = "initialized_at";
 const STATE_LAST_RUN_AT = "last_run_at";
 const STATE_LAST_SUCCESSFUL_RUN_AT = "last_successful_run_at";
-const STATE_SITEMAP_RETRY_AT = "sitemap_retry_at";
-const STATE_SITEMAP_RETRY_ATTEMPTS = "sitemap_retry_attempts";
+const STATE_FEED_RETRY_AT = "sitemap_retry_at";
+const STATE_FEED_RETRY_ATTEMPTS = "sitemap_retry_attempts";
 const URL_LOOKUP_BATCH_SIZE = 75;
 const ROWS_PER_INSERT = 10;
 const STATEMENTS_PER_BATCH = 25;
@@ -21,6 +21,8 @@ interface ArticleRow {
   section: string;
   status: StoredArticle["status"];
   attempts: number;
+  description: string | null;
+  image_url: string | null;
 }
 
 interface HealthRow {
@@ -40,19 +42,19 @@ export class D1ArticleRepository implements ArticleRepository {
     return row?.value ?? null;
   }
 
-  async seed(entries: SitemapArticle[], now: string): Promise<void> {
+  async seed(entries: NewsArticle[], now: string): Promise<void> {
     await this.insertEntries(entries, "seeded", now);
     const statements = [
       stateStatement(this.db, STATE_INITIALIZED_AT, now),
       stateStatement(this.db, STATE_LAST_RUN_AT, now),
       stateStatement(this.db, STATE_LAST_SUCCESSFUL_RUN_AT, now),
-      stateStatement(this.db, STATE_SITEMAP_RETRY_AT, ""),
-      stateStatement(this.db, STATE_SITEMAP_RETRY_ATTEMPTS, "0"),
+      stateStatement(this.db, STATE_FEED_RETRY_AT, ""),
+      stateStatement(this.db, STATE_FEED_RETRY_ATTEMPTS, "0"),
     ];
     await this.db.batch(statements);
   }
 
-  async discover(entries: SitemapArticle[], now: string): Promise<void> {
+  async discover(entries: NewsArticle[], now: string): Promise<void> {
     const knownUrls = new Set<string>();
     for (let offset = 0; offset < entries.length; offset += URL_LOOKUP_BATCH_SIZE) {
       const urls = entries
@@ -89,7 +91,7 @@ export class D1ArticleRepository implements ArticleRepository {
   async listReady(now: string, limit: number): Promise<StoredArticle[]> {
     const result = await this.db
       .prepare(
-        `SELECT url, title, publication_date, section, status, attempts
+        `SELECT url, title, publication_date, section, status, attempts, description, image_url
          FROM articles
          WHERE status = 'pending'
             OR (status = 'retry' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
@@ -146,25 +148,25 @@ export class D1ArticleRepository implements ArticleRepository {
     const statements = [
       stateStatement(this.db, STATE_LAST_RUN_AT, now),
       stateStatement(this.db, STATE_LAST_SUCCESSFUL_RUN_AT, now),
-      stateStatement(this.db, STATE_SITEMAP_RETRY_AT, ""),
-      stateStatement(this.db, STATE_SITEMAP_RETRY_ATTEMPTS, "0"),
+      stateStatement(this.db, STATE_FEED_RETRY_AT, ""),
+      stateStatement(this.db, STATE_FEED_RETRY_ATTEMPTS, "0"),
     ];
     await this.db.batch(statements);
   }
 
-  async markSitemapThrottled(retryAt: string, attempts: number): Promise<void> {
+  async markFeedThrottled(retryAt: string, attempts: number): Promise<void> {
     await this.db.batch([
-      stateStatement(this.db, STATE_SITEMAP_RETRY_AT, retryAt),
-      stateStatement(this.db, STATE_SITEMAP_RETRY_ATTEMPTS, String(attempts)),
+      stateStatement(this.db, STATE_FEED_RETRY_AT, retryAt),
+      stateStatement(this.db, STATE_FEED_RETRY_ATTEMPTS, String(attempts)),
     ]);
   }
 
   async health(): Promise<HealthSnapshot> {
-    const [initializedAt, lastRunAt, lastSuccessfulRunAt, sitemapRetryAt, counts] = await Promise.all([
+    const [initializedAt, lastRunAt, lastSuccessfulRunAt, feedRetryAt, counts] = await Promise.all([
       this.getState(STATE_INITIALIZED_AT),
       this.getState(STATE_LAST_RUN_AT),
       this.getState(STATE_LAST_SUCCESSFUL_RUN_AT),
-      this.getState(STATE_SITEMAP_RETRY_AT),
+      this.getState(STATE_FEED_RETRY_AT),
       this.db
         .prepare(
           `SELECT
@@ -179,7 +181,7 @@ export class D1ArticleRepository implements ArticleRepository {
       initializedAt,
       lastRunAt,
       lastSuccessfulRunAt,
-      sitemapRetryAt: sitemapRetryAt || null,
+      feedRetryAt: feedRetryAt || null,
       pending: Number(counts?.pending ?? 0),
       retry: Number(counts?.retry ?? 0),
       failed: Number(counts?.failed ?? 0),
@@ -187,19 +189,23 @@ export class D1ArticleRepository implements ArticleRepository {
   }
 
   private async insertEntries(
-    entries: SitemapArticle[],
+    entries: NewsArticle[],
     status: "seeded" | "pending",
     now: string,
   ): Promise<void> {
     const statements: D1PreparedStatement[] = [];
     for (let offset = 0; offset < entries.length; offset += ROWS_PER_INSERT) {
       const rows = entries.slice(offset, offset + ROWS_PER_INSERT);
-      const placeholders = rows.map(() => "(?, ?, ?, ?, ?, 0, ?, ?)").join(", ");
+      const placeholders = rows
+        .map(() => "(?, ?, ?, ?, ?, ?, ?, 0, ?, ?)")
+        .join(", ");
       const values = rows.flatMap((entry) => [
         entry.url,
         entry.title,
         entry.publicationDate,
         entry.section,
+        entry.description ?? null,
+        entry.imageUrl ?? null,
         status,
         now,
         now,
@@ -208,7 +214,8 @@ export class D1ArticleRepository implements ArticleRepository {
         this.db
           .prepare(
             `INSERT OR IGNORE INTO articles
-               (url, title, publication_date, section, status, attempts, discovered_at, updated_at)
+               (url, title, publication_date, section, description, image_url,
+                status, attempts, discovered_at, updated_at)
              VALUES ${placeholders}`,
           )
           .bind(...values),
@@ -237,5 +244,7 @@ function toStoredArticle(row: ArticleRow): StoredArticle {
     section: row.section,
     status: row.status,
     attempts: Number(row.attempts),
+    description: row.description ?? undefined,
+    imageUrl: row.image_url ?? undefined,
   };
 }

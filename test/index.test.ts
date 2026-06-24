@@ -22,7 +22,7 @@ describe("HTTP interface", () => {
       initializedAt: "2026-06-24T12:00:00.000Z",
       lastRunAt: "2026-06-24T12:10:00.000Z",
       lastSuccessfulRunAt: "2026-06-24T12:10:00.000Z",
-      sitemapRetryAt: null,
+      feedRetryAt: null,
       pending: 2,
       retry: 1,
       failed: 3,

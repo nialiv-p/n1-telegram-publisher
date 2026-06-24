@@ -1,15 +1,14 @@
-import { fetchArticleMetadata } from "./article";
+import { FEED_URL, parseFeed } from "./feed";
 import { buildTelegramContent } from "./format";
 import { D1ArticleRepository } from "./repository";
-import { parseSitemap, SITEMAP_URL } from "./sitemap";
 import { publishToTelegram, TelegramError } from "./telegram";
-import type { ArticleRepository, Env, SitemapArticle } from "./types";
+import type { ArticleRepository, Env, NewsArticle } from "./types";
 
 const MAX_ARTICLES_PER_RUN = 1;
 const MAX_ATTEMPTS = 5;
 const STALE_SENDING_AFTER_MS = 10 * 60 * 1000;
-const STATE_SITEMAP_RETRY_AT = "sitemap_retry_at";
-const STATE_SITEMAP_RETRY_ATTEMPTS = "sitemap_retry_attempts";
+const STATE_FEED_RETRY_AT = "sitemap_retry_at";
+const STATE_FEED_RETRY_ATTEMPTS = "sitemap_retry_attempts";
 const THROTTLE_BASE_DELAY_MS = 5 * 60 * 1000;
 const THROTTLE_MAX_DELAY_MS = 30 * 60 * 1000;
 
@@ -34,23 +33,23 @@ export async function runScheduled(
 
   const runDate = dependencies.now();
   const runAt = runDate.toISOString();
-  const retryAt = await dependencies.repository.getState(STATE_SITEMAP_RETRY_AT);
+  const retryAt = await dependencies.repository.getState(STATE_FEED_RETRY_AT);
   if (retryAt && Date.parse(retryAt) > runDate.getTime()) {
-    log("info", "sitemap_cooldown_active", { retryAt });
+    log("info", "feed_cooldown_active", { retryAt });
     return;
   }
 
-  let sitemap: string;
+  let feed: string;
   try {
-    sitemap = await fetchSitemap(dependencies.fetchImpl);
+    feed = await fetchNewsFeed(dependencies.fetchImpl);
   } catch (error) {
-    if (error instanceof SitemapHttpError && (error.status === 403 || error.status === 429)) {
-      await scheduleSitemapRetry(dependencies.repository, error, runDate);
+    if (error instanceof FeedHttpError && (error.status === 403 || error.status === 429)) {
+      await scheduleFeedRetry(dependencies.repository, error, runDate);
       return;
     }
     throw error;
   }
-  const entries = parseSitemap(sitemap);
+  const entries = parseFeed(feed);
   const initializedAt = await dependencies.repository.getState("initialized_at");
 
   if (!initializedAt) {
@@ -96,52 +95,50 @@ export async function runScheduled(
 
 async function publishArticle(
   env: Env,
-  article: SitemapArticle,
+  article: NewsArticle,
   fetchImpl: typeof fetch,
 ): Promise<number> {
-  const metadata = await fetchArticleMetadata(article.url, fetchImpl);
-  const title = metadata.title ?? article.title;
-  const content = buildTelegramContent(title, metadata.description, article.url);
+  const content = buildTelegramContent(article.title, article.description, article.url);
   return publishToTelegram(
     env.TELEGRAM_BOT_TOKEN,
     env.TELEGRAM_CHANNEL_ID,
     content,
-    metadata.imageUrl,
+    article.imageUrl,
     fetchImpl,
   );
 }
 
-async function fetchSitemap(fetchImpl: typeof fetch): Promise<string> {
-  const response = await fetchImpl(SITEMAP_URL, {
+async function fetchNewsFeed(fetchImpl: typeof fetch): Promise<string> {
+  const response = await fetchImpl(FEED_URL, {
     headers: {
-      Accept: "application/xml,text/xml",
+      Accept: "application/rss+xml,application/xml,text/xml",
       "User-Agent": "N1TelegramPublisher/1.0 (+https://workers.dev)",
     },
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) {
-    throw new SitemapHttpError(response.status, parseRetryAfter(response.headers.get("retry-after")));
+    throw new FeedHttpError(response.status, parseRetryAfter(response.headers.get("retry-after")));
   }
   return response.text();
 }
 
-class SitemapHttpError extends Error {
+class FeedHttpError extends Error {
   constructor(
     readonly status: number,
     readonly retryAfterMilliseconds?: number,
   ) {
-    super(`Sitemap returned HTTP ${status}`);
-    this.name = "SitemapHttpError";
+    super(`N1 feed returned HTTP ${status}`);
+    this.name = "FeedHttpError";
   }
 }
 
-async function scheduleSitemapRetry(
+async function scheduleFeedRetry(
   repository: ArticleRepository,
-  error: SitemapHttpError,
+  error: FeedHttpError,
   now: Date,
 ): Promise<void> {
   const previousAttempts = Number.parseInt(
-    (await repository.getState(STATE_SITEMAP_RETRY_ATTEMPTS)) ?? "0",
+    (await repository.getState(STATE_FEED_RETRY_ATTEMPTS)) ?? "0",
     10,
   );
   const attempts = Number.isFinite(previousAttempts) ? previousAttempts + 1 : 1;
@@ -151,8 +148,8 @@ async function scheduleSitemapRetry(
   );
   const delay = error.retryAfterMilliseconds ?? exponentialDelay;
   const retryAt = new Date(now.getTime() + delay).toISOString();
-  await repository.markSitemapThrottled(retryAt, attempts);
-  log("warn", "sitemap_throttled", { status: error.status, attempts, retryAt });
+  await repository.markFeedThrottled(retryAt, attempts);
+  log("warn", "feed_throttled", { status: error.status, attempts, retryAt });
 }
 
 function parseRetryAfter(value: string | null): number | undefined {
@@ -165,7 +162,7 @@ function parseRetryAfter(value: string | null): number | undefined {
 
 async function recordFailure(
   repository: ArticleRepository,
-  article: SitemapArticle & { attempts: number },
+  article: NewsArticle & { attempts: number },
   error: unknown,
   now: Date,
 ): Promise<void> {

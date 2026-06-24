@@ -15,14 +15,16 @@ export interface Env {
   TELEGRAM_CHANNEL_ID: string;
 }
 
-export interface SitemapArticle {
+export interface NewsArticle {
   url: string;
   title: string;
   publicationDate: string;
   section: string;
+  description?: string;
+  imageUrl?: string;
 }
 
-export interface StoredArticle extends SitemapArticle {
+export interface StoredArticle extends NewsArticle {
   status: ArticleStatus;
   attempts: number;
 }
@@ -37,7 +39,7 @@ export interface HealthSnapshot {
   initializedAt: string | null;
   lastRunAt: string | null;
   lastSuccessfulRunAt: string | null;
-  sitemapRetryAt: string | null;
+  feedRetryAt: string | null;
   pending: number;
   retry: number;
   failed: number;
@@ -45,8 +47,8 @@ export interface HealthSnapshot {
 
 export interface ArticleRepository {
   getState(key: string): Promise<string | null>;
-  seed(entries: SitemapArticle[], now: string): Promise<void>;
-  discover(entries: SitemapArticle[], now: string): Promise<void>;
+  seed(entries: NewsArticle[], now: string): Promise<void>;
+  discover(entries: NewsArticle[], now: string): Promise<void>;
   recoverStaleSending(staleBefore: string, now: string): Promise<void>;
   listReady(now: string, limit: number): Promise<StoredArticle[]>;
   claim(url: string, now: string): Promise<boolean>;
@@ -60,6 +62,6 @@ export interface ArticleRepository {
     now: string,
   ): Promise<void>;
   markRunSuccessful(now: string): Promise<void>;
-  markSitemapThrottled(retryAt: string, attempts: number): Promise<void>;
+  markFeedThrottled(retryAt: string, attempts: number): Promise<void>;
   health(): Promise<HealthSnapshot>;
 }

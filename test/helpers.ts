@@ -1,7 +1,7 @@
 import type {
   ArticleRepository,
   HealthSnapshot,
-  SitemapArticle,
+  NewsArticle,
   StoredArticle,
 } from "../src/types";
 
@@ -19,14 +19,14 @@ export class MemoryRepository implements ArticleRepository {
     return this.state.get(key) ?? null;
   }
 
-  async seed(entries: SitemapArticle[], now: string): Promise<void> {
+  async seed(entries: NewsArticle[], now: string): Promise<void> {
     this.insert(entries, "seeded");
     this.state.set("initialized_at", now);
     this.state.set("last_run_at", now);
     this.state.set("last_successful_run_at", now);
   }
 
-  async discover(entries: SitemapArticle[], now: string): Promise<void> {
+  async discover(entries: NewsArticle[], now: string): Promise<void> {
     this.insert(entries, "pending");
     this.state.set("last_run_at", now);
   }
@@ -82,7 +82,7 @@ export class MemoryRepository implements ArticleRepository {
     this.state.set("sitemap_retry_attempts", "0");
   }
 
-  async markSitemapThrottled(retryAt: string, attempts: number): Promise<void> {
+  async markFeedThrottled(retryAt: string, attempts: number): Promise<void> {
     this.state.set("sitemap_retry_at", retryAt);
     this.state.set("sitemap_retry_attempts", String(attempts));
   }
@@ -94,14 +94,14 @@ export class MemoryRepository implements ArticleRepository {
       initializedAt: this.state.get("initialized_at") ?? null,
       lastRunAt: this.state.get("last_run_at") ?? null,
       lastSuccessfulRunAt: this.state.get("last_successful_run_at") ?? null,
-      sitemapRetryAt: this.state.get("sitemap_retry_at") || null,
+      feedRetryAt: this.state.get("sitemap_retry_at") || null,
       pending: count("pending"),
       retry: count("retry"),
       failed: count("failed"),
     };
   }
 
-  private insert(entries: SitemapArticle[], status: "seeded" | "pending"): void {
+  private insert(entries: NewsArticle[], status: "seeded" | "pending"): void {
     for (const entry of entries) {
       if (!this.articles.has(entry.url)) {
         this.articles.set(entry.url, {
@@ -123,22 +123,27 @@ export class MemoryRepository implements ArticleRepository {
   }
 }
 
-export function sitemapXml(
-  entries: Array<{ url: string; title: string; publicationDate: string }>,
+export function feedXml(
+  entries: Array<{
+    url: string;
+    title: string;
+    publicationDate: string;
+    description?: string;
+    imageUrl?: string;
+  }>,
 ): string {
   return `<?xml version="1.0"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
+<rss xmlns:media="http://search.yahoo.com/mrss/" version="2.0"><channel>
 ${entries
   .map(
-    (entry) => `<url>
-  <loc>${entry.url}</loc>
-  <lastmod>${entry.publicationDate}</lastmod>
-  <news:news>
-    <news:publication_date>${entry.publicationDate}</news:publication_date>
-    <news:title>${entry.title}</news:title>
-  </news:news>
-</url>`,
+    (entry) => `<item>
+  <title>${entry.title}</title>
+  <link>${entry.url}</link>
+  <description><![CDATA[${entry.description ?? "Kratak opis"}]]></description>
+  ${entry.imageUrl ? `<media:content url="${entry.imageUrl}" type="image/jpeg"/>` : ""}
+  <pubDate>${entry.publicationDate}</pubDate>
+</item>`,
   )
   .join("\n")}
-</urlset>`;
+</channel></rss>`;
 }

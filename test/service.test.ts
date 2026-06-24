@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { runScheduled } from "../src/service";
 import type { Env } from "../src/types";
-import { MemoryRepository, sitemapXml } from "./helpers";
+import { feedXml, MemoryRepository } from "./helpers";
 
 const NOW = new Date("2026-06-24T12:10:00.000Z");
 const ARTICLE_URL = "https://n1info.rs/vesti/nova-vest/";
@@ -12,9 +12,9 @@ const env = {
 } as Env;
 
 describe("scheduled service", () => {
-  it("seeds the first sitemap without publishing", async () => {
+  it("seeds the first feed without publishing", async () => {
     const repository = new MemoryRepository();
-    const fetchImpl = vi.fn(async () => xmlResponse(oneArticleSitemap())) as unknown as typeof fetch;
+    const fetchImpl = vi.fn(async () => xmlResponse(oneArticleFeed())) as unknown as typeof fetch;
 
     await runScheduled(env, dependencies(repository, fetchImpl));
 
@@ -52,16 +52,20 @@ describe("scheduled service", () => {
     expect(repository.articles.get(ARTICLE_URL)).toMatchObject({ status: "sent", messageId: 456 });
   });
 
-  it("uses sitemap data when the article page cannot be loaded", async () => {
+  it("uses RSS metadata without fetching the article page", async () => {
     const repository = initializedRepository();
-    const fetchImpl = routeFetch({ articleStatus: 503, telegramMessageId: 789 });
+    const fetchImpl = routeFetch({ telegramMessageId: 789 });
 
     await runScheduled(env, dependencies(repository, fetchImpl));
 
     const telegramCall = telegramCalls(fetchImpl)[0];
-    const body = JSON.parse(String(telegramCall?.[1]?.body)) as { text: string };
-    expect(body.text).toContain("Nova vest");
+    const body = JSON.parse(String(telegramCall?.[1]?.body)) as {
+      caption?: string;
+      text?: string;
+    };
+    expect(body.caption ?? body.text).toContain("Kratak opis");
     expect(repository.articles.get(ARTICLE_URL)?.status).toBe("sent");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it("honors Telegram retry_after and fails permanently after five attempts", async () => {
@@ -96,7 +100,7 @@ describe("scheduled service", () => {
       title: `Article ${index}`,
       publicationDate: new Date(NOW.getTime() + index * 1000).toISOString(),
     }));
-    const fetchImpl = routeFetch({ sitemap: sitemapXml(entries), telegramMessageId: 100 });
+    const fetchImpl = routeFetch({ feed: feedXml(entries), telegramMessageId: 100 });
 
     await runScheduled(env, dependencies(repository, fetchImpl));
 
@@ -119,12 +123,12 @@ describe("scheduled service", () => {
     expect(repository.state.get("sitemap_retry_at")).toBe("2026-06-24T12:15:00.000Z");
   });
 
-  it("does not mutate state when the sitemap is malformed", async () => {
+  it("does not mutate state when the feed is malformed", async () => {
     const repository = initializedRepository();
     const fetchImpl = vi.fn(async () => xmlResponse("<invalid />")) as unknown as typeof fetch;
 
     await expect(runScheduled(env, dependencies(repository, fetchImpl))).rejects.toThrow(
-      /urlset\/url is missing/,
+      /rss\/item is missing/,
     );
     expect(repository.articles).toHaveLength(0);
     expect(repository.state.get("last_run_at")).toBeUndefined();
@@ -164,19 +168,20 @@ function initializedRepository(): MemoryRepository {
   return repository;
 }
 
-function oneArticleSitemap(): string {
-  return sitemapXml([
+function oneArticleFeed(): string {
+  return feedXml([
     {
       url: ARTICLE_URL,
       title: "Nova vest",
       publicationDate: "2026-06-24T12:09:00.000Z",
+      description: "Kratak opis",
+      imageUrl: "https://n1info.rs/image.jpg",
     },
   ]);
 }
 
 interface FetchOptions {
-  sitemap?: string;
-  articleStatus?: number;
+  feed?: string;
   rejectPhoto?: boolean;
   rateLimited?: boolean;
   telegramNetworkError?: boolean;
@@ -187,19 +192,11 @@ interface FetchOptions {
 function routeFetch(options: FetchOptions): ReturnType<typeof vi.fn> {
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.includes("sitemap_news_1.xml")) {
-      return xmlResponse(options.sitemap ?? oneArticleSitemap());
+    if (url === "https://n1info.rs/feed/") {
+      return xmlResponse(options.feed ?? oneArticleFeed());
     }
     if (url.startsWith("https://n1info.rs/")) {
-      if (options.articleStatus && options.articleStatus >= 400) {
-        return new Response("unavailable", { status: options.articleStatus });
-      }
-      return new Response(
-        `<meta property="og:title" content="Nova vest">
-         <meta property="og:description" content="Kratak opis">
-         <meta property="og:image" content="https://n1info.rs/image.jpg">`,
-        { status: 200, headers: { "Content-Type": "text/html" } },
-      );
+      throw new Error(`Unexpected article-page request: ${url}`);
     }
     if (url.includes("api.telegram.org")) {
       if (options.telegramNetworkError) {
