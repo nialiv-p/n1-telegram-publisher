@@ -14,6 +14,7 @@ export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_CHANNEL_ID: string;
   INGEST_SECRET: string;
+  GITHUB_DISPATCH_TOKEN: string;
 }
 
 export interface NewsArticle {

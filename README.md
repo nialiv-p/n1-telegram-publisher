@@ -1,6 +1,6 @@
 # N1 → Telegram
 
-GitHub Actions загружает публичную RSS-ленту `n1info.rs/feed/` каждые пять минут и передаёт её в защищённый endpoint Cloudflare Worker. Worker возвращает до 10 действительно новых URL, после чего GitHub Actions извлекает с этих страниц полный вводный абзац и отправляет обогащённые записи Worker для публикации. Первый запуск только запоминает текущие статьи, поэтому старые новости не заполнят канал.
+Cloudflare Cron каждые пять минут запускает GitHub Actions через API. Workflow загружает публичную RSS-ленту `n1info.rs/feed/` и передаёт её в защищённый endpoint Cloudflare Worker. Worker возвращает до 10 действительно новых URL, после чего GitHub Actions извлекает с этих страниц полный вводный абзац и отправляет обогащённые записи Worker для публикации. Первый запуск только запоминает текущие статьи, поэтому старые новости не заполнят канал.
 
 Такое разделение необходимо, потому что N1 блокирует исходящие запросы сети Cloudflare Workers. Worker сам не обращается к N1; все публичные страницы загружает GitHub Actions, а запросы `/discover` и `/publish` защищены общим секретом.
 
@@ -51,6 +51,12 @@ npx wrangler secret put INGEST_SECRET
 gh secret set INGEST_SECRET
 ```
 
+Для запуска workflow создайте fine-grained GitHub token с доступом только к репозиторию `n1-telegram-publisher` и разрешением `Actions: Read and write`. Сохраните его только в Cloudflare:
+
+```bash
+npx wrangler secret put GITHUB_DISPATCH_TOKEN
+```
+
 Перед публикацией выполните проверки и deployment:
 
 ```bash
@@ -65,7 +71,7 @@ npm run deploy
 gh workflow run ingest-feed.yml
 ```
 
-Дальше workflow запускается автоматически каждые пять минут. На чистой D1 первый запуск заполнит записи статусом `seeded`, но ничего не отправит. Следующая подходящая статья будет опубликована автоматически.
+Дальше Cloudflare Cron вызывает workflow автоматически каждые пять минут. На чистой D1 первый запуск заполнит записи статусом `seeded`, но ничего не отправит. Следующая подходящая статья будет опубликована автоматически.
 
 ## Локальная проверка
 
@@ -75,6 +81,7 @@ gh workflow run ingest-feed.yml
 TELEGRAM_BOT_TOKEN=your_test_token
 TELEGRAM_CHANNEL_ID=@your_test_channel
 INGEST_SECRET=your_local_ingest_secret
+GITHUB_DISPATCH_TOKEN=your_local_github_token
 ```
 
 Примените миграцию к локальной D1 и запустите Worker:

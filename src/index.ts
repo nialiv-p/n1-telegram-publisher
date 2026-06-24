@@ -1,3 +1,4 @@
+import { dispatchIngestionWorkflow } from "./github";
 import { D1ArticleRepository } from "./repository";
 import { discoverFeed, publishEnrichedArticles } from "./service";
 import type { ArticleEnrichment, Env } from "./types";
@@ -5,6 +6,18 @@ import type { ArticleEnrichment, Env } from "./types";
 const MAX_FEED_BYTES = 1_000_000;
 
 export default {
+  async scheduled(
+    _controller: ScheduledController,
+    env: Env,
+    context: ExecutionContext,
+  ): Promise<void> {
+    context.waitUntil(
+      dispatchIngestionWorkflow(env.GITHUB_DISPATCH_TOKEN).then(() => {
+        console.log(JSON.stringify({ level: "info", event: "github_workflow_dispatched" }));
+      }),
+    );
+  },
+
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
