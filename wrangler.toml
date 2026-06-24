@@ -1,0 +1,16 @@
+name = "n1-telegram-publisher"
+main = "src/index.ts"
+compatibility_date = "2026-06-24"
+workers_dev = true
+
+[triggers]
+crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "n1-telegram-publisher"
+database_id = "d546abbb-318c-4489-b8ea-6828152df3a1"
+migrations_dir = "migrations"
+
+[vars]
+TELEGRAM_CHANNEL_ID = "@n1_info_rs"

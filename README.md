@@ -1,0 +1,103 @@
+# N1 → Telegram
+
+Cloudflare Worker проверяет публичный новостной sitemap `n1info.rs` каждую минуту и публикует новые сербоязычные статьи в Telegram-канале. Первый запуск только запоминает текущие статьи, поэтому старые новости не заполнят канал.
+
+## Что публикуется
+
+Разрешены разделы `vesti`, `svet`, `magazin`, `biznis`, `region`, `kultura`, `kolumne` и `zeleni-kutak`. Английские материалы, видео, анонсы передач, `n1-direktno` и неизвестные разделы исключаются.
+
+Пост содержит изображение, заголовок, краткое описание и ссылку на оригинал. Если изображение недоступно, Worker автоматически отправляет текстовый пост.
+
+## Подготовка Telegram
+
+1. Создайте бота через [@BotFather](https://t.me/BotFather) командой `/newbot` и сохраните выданный токен.
+2. Добавьте бота администратором нужного канала.
+3. Выдайте ему право публикации сообщений.
+4. Для публичного канала используйте идентификатор вида `@channel_name`. Для приватного канала потребуется числовой `chat_id` вида `-100...`.
+
+Никогда не добавляйте токен в `wrangler.toml`, Git или логи.
+
+## Развёртывание на Cloudflare
+
+Требуются Node.js 20+ и бесплатный аккаунт Cloudflare.
+
+```bash
+npm install
+npx wrangler login
+npx wrangler d1 create n1-telegram-publisher
+```
+
+Команда создания D1 выведет `database_id`. Замените `REPLACE_WITH_D1_DATABASE_ID` в `wrangler.toml` полученным значением. Там же замените `@replace_with_channel_username` на идентификатор канала.
+
+Примените схему базы и сохраните Telegram-токен как секрет:
+
+```bash
+npx wrangler d1 migrations apply n1-telegram-publisher --remote
+npx wrangler secret put TELEGRAM_BOT_TOKEN
+```
+
+Перед публикацией выполните проверки и deployment:
+
+```bash
+npm test
+npm run typecheck
+npm run deploy
+```
+
+После deployment дождитесь первого минутного запуска. Он заполнит D1 статусом `seeded`, но ничего не отправит. Следующая подходящая статья будет опубликована автоматически.
+
+## Локальная проверка
+
+Создайте локальный файл `.dev.vars`, который уже исключён из Git:
+
+```dotenv
+TELEGRAM_BOT_TOKEN=your_test_token
+TELEGRAM_CHANNEL_ID=@your_test_channel
+```
+
+Примените миграцию к локальной D1 и запустите Worker:
+
+```bash
+npx wrangler d1 migrations apply n1-telegram-publisher --local
+npm run dev
+```
+
+Локальный scheduled handler можно вызвать через URL, который Wrangler покажет для `--test-scheduled`. Используйте отдельный тестовый канал, поскольку вызов действительно отправляет сообщения.
+
+## Состояние и диагностика
+
+`GET /health` возвращает:
+
+```json
+{
+  "status": "ok",
+  "initializedAt": "2026-06-24T12:00:00.000Z",
+  "lastRunAt": "2026-06-24T12:10:00.000Z",
+  "lastSuccessfulRunAt": "2026-06-24T12:10:00.000Z",
+  "pending": 0,
+  "retry": 0,
+  "failed": 0
+}
+```
+
+Логи Worker структурированы как JSON и доступны в Cloudflare dashboard или через:
+
+```bash
+npx wrangler tail
+```
+
+Временные ошибки повторяются с увеличивающейся задержкой. После пяти неудач статья получает статус `failed`. Вернуть все такие статьи в очередь можно командой:
+
+```bash
+npx wrangler d1 execute n1-telegram-publisher --remote --command "UPDATE articles SET status = 'retry', attempts = 0, next_attempt_at = NULL, last_error = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE status = 'failed';"
+```
+
+Для одной статьи добавьте к условию `AND url = 'https://n1info.rs/...'`.
+
+## Поведение при сбоях
+
+- Недоступный sitemap не изменяет очередь.
+- Недоступная HTML-страница не блокирует публикацию: используются заголовок и URL из sitemap.
+- За один запуск отправляется не более 10 статей, от старых к новым.
+- Уже известный нормализованный URL повторно не публикуется.
+- После неоднозначного сетевого сбоя отправка повторяется. Это предотвращает потерю новости, но в редком случае Telegram мог принять первый запрос и создать дубль.
