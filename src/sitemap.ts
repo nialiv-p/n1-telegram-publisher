@@ -1,4 +1,3 @@
-import { XMLParser } from "fast-xml-parser";
 import type { SitemapArticle } from "./types";
 
 export const SITEMAP_URL = "https://n1info.rs/sitemap/sitemap_news_1.xml";
@@ -14,27 +13,10 @@ const ALLOWED_SECTIONS = new Set([
   "zeleni-kutak",
 ]);
 
-interface ParsedSitemapEntry {
-  loc?: unknown;
-  lastmod?: unknown;
-  news?: {
-    publication_date?: unknown;
-    title?: unknown;
-  };
-}
-
-interface ParsedSitemap {
-  urlset?: {
-    url?: ParsedSitemapEntry | ParsedSitemapEntry[];
-  };
-}
-
-const parser = new XMLParser({
-  ignoreAttributes: false,
-  removeNSPrefix: true,
-  processEntities: true,
-  trimValues: true,
-});
+const LOC_PATTERN = /<loc>([\s\S]*?)<\/loc>/;
+const LAST_MODIFIED_PATTERN = /<lastmod>([\s\S]*?)<\/lastmod>/;
+const PUBLICATION_DATE_PATTERN = /<news:publication_date>([\s\S]*?)<\/news:publication_date>/;
+const TITLE_PATTERN = /<news:title>([\s\S]*?)<\/news:title>/;
 
 export function normalizeArticleUrl(value: string): string | null {
   try {
@@ -63,26 +45,21 @@ export function getAllowedSection(url: string): string | null {
 }
 
 export function parseSitemap(xml: string): SitemapArticle[] {
-  let document: ParsedSitemap;
-  try {
-    document = parser.parse(xml) as ParsedSitemap;
-  } catch (error) {
-    throw new Error(`Invalid sitemap XML: ${errorMessage(error)}`);
-  }
-
-  const rawEntries = document.urlset?.url;
-  if (!rawEntries) {
+  if (!xml.includes("<urlset") || !xml.includes("</urlset>")) {
     throw new Error("Invalid sitemap XML: urlset/url is missing");
   }
 
-  const entries = Array.isArray(rawEntries) ? rawEntries : [rawEntries];
   const unique = new Map<string, SitemapArticle>();
+  let urlBlockCount = 0;
 
-  for (const entry of entries) {
-    const rawUrl = asNonEmptyString(entry.loc);
-    const title = asNonEmptyString(entry.news?.title);
+  for (const match of xml.matchAll(/<url>([\s\S]*?)<\/url>/g)) {
+    urlBlockCount += 1;
+    const block = match[1] ?? "";
+    const rawUrl = extractXmlText(block, LOC_PATTERN);
+    const title = extractXmlText(block, TITLE_PATTERN);
     const publicationDate =
-      asNonEmptyString(entry.news?.publication_date) ?? asNonEmptyString(entry.lastmod);
+      extractXmlText(block, PUBLICATION_DATE_PATTERN) ??
+      extractXmlText(block, LAST_MODIFIED_PATTERN);
     if (!rawUrl || !title || !publicationDate || Number.isNaN(Date.parse(publicationDate))) {
       continue;
     }
@@ -96,19 +73,48 @@ export function parseSitemap(xml: string): SitemapArticle[] {
     unique.set(url, { url, title, publicationDate, section });
   }
 
+  if (urlBlockCount === 0) {
+    throw new Error("Invalid sitemap XML: urlset/url is missing");
+  }
+
   return [...unique.values()].sort(
     (left, right) => Date.parse(left.publicationDate) - Date.parse(right.publicationDate),
   );
 }
 
-function asNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") {
+function extractXmlText(block: string, pattern: RegExp): string | null {
+  const raw = pattern.exec(block)?.[1];
+  if (!raw) {
     return null;
   }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
+  const cdata = raw.trim().match(/^<!\[CDATA\[([\s\S]*)\]\]>$/)?.[1] ?? raw;
+  const decoded = decodeXmlEntities(cdata).trim();
+  return decoded.length > 0 ? decoded : null;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function decodeXmlEntities(value: string): string {
+  const named: Record<string, string> = {
+    amp: "&",
+    apos: "'",
+    gt: ">",
+    lt: "<",
+    quot: '"',
+  };
+  return value.replace(/&(#x[\da-f]+|#\d+|amp|apos|gt|lt|quot);/gi, (entity, code: string) => {
+    if (code.startsWith("#x") || code.startsWith("#X")) {
+      return safeCodePoint(Number.parseInt(code.slice(2), 16), entity);
+    }
+    if (code.startsWith("#")) {
+      return safeCodePoint(Number.parseInt(code.slice(1), 10), entity);
+    }
+    return named[code.toLowerCase()] ?? entity;
+  });
+}
+
+function safeCodePoint(codePoint: number, fallback: string): string {
+  try {
+    return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : fallback;
+  } catch {
+    return fallback;
+  }
 }

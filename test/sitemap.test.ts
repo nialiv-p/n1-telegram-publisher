@@ -38,6 +38,17 @@ describe("sitemap", () => {
     ]);
   });
 
+  it("supports CDATA and numeric XML entities", () => {
+    const xml = sitemapXml([
+      {
+        url: "https://n1info.rs/vesti/cdata/",
+        title: "<![CDATA[Naslov &#38; detalji]]>",
+        publicationDate: "2026-06-24T12:00:00+02:00",
+      },
+    ]);
+    expect(parseSitemap(xml)[0]?.title).toBe("Naslov & detalji");
+  });
+
   it("normalizes only HTTPS N1 URLs", () => {
     expect(normalizeArticleUrl("https://n1info.rs/vesti/test?x=1#top")).toBe(
       "https://n1info.rs/vesti/test/",

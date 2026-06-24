@@ -8,7 +8,10 @@ import type {
 const STATE_INITIALIZED_AT = "initialized_at";
 const STATE_LAST_RUN_AT = "last_run_at";
 const STATE_LAST_SUCCESSFUL_RUN_AT = "last_successful_run_at";
-const BATCH_SIZE = 100;
+const STATE_SITEMAP_ETAG = "sitemap_etag";
+const URL_LOOKUP_BATCH_SIZE = 75;
+const ROWS_PER_INSERT = 10;
+const STATEMENTS_PER_BATCH = 25;
 
 interface ArticleRow {
   url: string;
@@ -36,18 +39,39 @@ export class D1ArticleRepository implements ArticleRepository {
     return row?.value ?? null;
   }
 
-  async seed(entries: SitemapArticle[], now: string): Promise<void> {
+  async seed(entries: SitemapArticle[], now: string, sitemapEtag?: string): Promise<void> {
     await this.insertEntries(entries, "seeded", now);
-    await this.db.batch([
+    const statements = [
       stateStatement(this.db, STATE_INITIALIZED_AT, now),
       stateStatement(this.db, STATE_LAST_RUN_AT, now),
       stateStatement(this.db, STATE_LAST_SUCCESSFUL_RUN_AT, now),
-    ]);
+    ];
+    if (sitemapEtag) {
+      statements.push(stateStatement(this.db, STATE_SITEMAP_ETAG, sitemapEtag));
+    }
+    await this.db.batch(statements);
   }
 
   async discover(entries: SitemapArticle[], now: string): Promise<void> {
-    await this.insertEntries(entries, "pending", now);
-    await this.db.batch([stateStatement(this.db, STATE_LAST_RUN_AT, now)]);
+    const knownUrls = new Set<string>();
+    for (let offset = 0; offset < entries.length; offset += URL_LOOKUP_BATCH_SIZE) {
+      const urls = entries
+        .slice(offset, offset + URL_LOOKUP_BATCH_SIZE)
+        .map((entry) => entry.url);
+      const placeholders = urls.map(() => "?").join(", ");
+      const result = await this.db
+        .prepare(`SELECT url FROM articles WHERE url IN (${placeholders})`)
+        .bind(...urls)
+        .all<{ url: string }>();
+      for (const row of result.results ?? []) {
+        knownUrls.add(row.url);
+      }
+    }
+    await this.insertEntries(
+      entries.filter((entry) => !knownUrls.has(entry.url)),
+      "pending",
+      now,
+    );
   }
 
   async recoverStaleSending(staleBefore: string, now: string): Promise<void> {
@@ -118,11 +142,15 @@ export class D1ArticleRepository implements ArticleRepository {
       .run();
   }
 
-  async markRunSuccessful(now: string): Promise<void> {
-    await this.db.batch([
+  async markRunSuccessful(now: string, sitemapEtag?: string): Promise<void> {
+    const statements = [
       stateStatement(this.db, STATE_LAST_RUN_AT, now),
       stateStatement(this.db, STATE_LAST_SUCCESSFUL_RUN_AT, now),
-    ]);
+    ];
+    if (sitemapEtag) {
+      statements.push(stateStatement(this.db, STATE_SITEMAP_ETAG, sitemapEtag));
+    }
+    await this.db.batch(statements);
   }
 
   async health(): Promise<HealthSnapshot> {
@@ -155,27 +183,31 @@ export class D1ArticleRepository implements ArticleRepository {
     status: "seeded" | "pending",
     now: string,
   ): Promise<void> {
-    for (let offset = 0; offset < entries.length; offset += BATCH_SIZE) {
-      const statements = entries.slice(offset, offset + BATCH_SIZE).map((entry) =>
+    const statements: D1PreparedStatement[] = [];
+    for (let offset = 0; offset < entries.length; offset += ROWS_PER_INSERT) {
+      const rows = entries.slice(offset, offset + ROWS_PER_INSERT);
+      const placeholders = rows.map(() => "(?, ?, ?, ?, ?, 0, ?, ?)").join(", ");
+      const values = rows.flatMap((entry) => [
+        entry.url,
+        entry.title,
+        entry.publicationDate,
+        entry.section,
+        status,
+        now,
+        now,
+      ]);
+      statements.push(
         this.db
           .prepare(
             `INSERT OR IGNORE INTO articles
                (url, title, publication_date, section, status, attempts, discovered_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
+             VALUES ${placeholders}`,
           )
-          .bind(
-            entry.url,
-            entry.title,
-            entry.publicationDate,
-            entry.section,
-            status,
-            now,
-            now,
-          ),
+          .bind(...values),
       );
-      if (statements.length > 0) {
-        await this.db.batch(statements);
-      }
+    }
+    for (let offset = 0; offset < statements.length; offset += STATEMENTS_PER_BATCH) {
+      await this.db.batch(statements.slice(offset, offset + STATEMENTS_PER_BATCH));
     }
   }
 }

@@ -44,7 +44,7 @@ export interface HealthSnapshot {
 
 export interface ArticleRepository {
   getState(key: string): Promise<string | null>;
-  seed(entries: SitemapArticle[], now: string): Promise<void>;
+  seed(entries: SitemapArticle[], now: string, sitemapEtag?: string): Promise<void>;
   discover(entries: SitemapArticle[], now: string): Promise<void>;
   recoverStaleSending(staleBefore: string, now: string): Promise<void>;
   listReady(now: string, limit: number): Promise<StoredArticle[]>;
@@ -58,6 +58,6 @@ export interface ArticleRepository {
     nextAttemptAt: string | null,
     now: string,
   ): Promise<void>;
-  markRunSuccessful(now: string): Promise<void>;
+  markRunSuccessful(now: string, sitemapEtag?: string): Promise<void>;
   health(): Promise<HealthSnapshot>;
 }

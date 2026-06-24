@@ -20,6 +20,7 @@ describe("scheduled service", () => {
 
     expect(repository.articles.get(ARTICLE_URL)?.status).toBe("seeded");
     expect(repository.state.get("initialized_at")).toBe(NOW.toISOString());
+    expect(repository.state.get("sitemap_etag")).toBe('"test-etag"');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -35,6 +36,21 @@ describe("scheduled service", () => {
       messageId: 123,
     });
     expect(telegramCalls(fetchImpl)).toHaveLength(1);
+  });
+
+  it("uses If-None-Match and skips parsing when the sitemap returns 304", async () => {
+    const repository = initializedRepository();
+    repository.state.set("sitemap_etag", '"previous-etag"');
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get("If-None-Match")).toBe('"previous-etag"');
+      return new Response(null, { status: 304 });
+    }) as unknown as typeof fetch;
+
+    await runScheduled(env, dependencies(repository, fetchImpl));
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(repository.articles.size).toBe(0);
+    expect(repository.state.get("last_successful_run_at")).toBe(NOW.toISOString());
   });
 
   it("falls back to sendMessage when Telegram rejects the photo", async () => {
@@ -223,5 +239,8 @@ function telegramCalls(fetchImpl: ReturnType<typeof vi.fn>) {
 }
 
 function xmlResponse(xml: string): Response {
-  return new Response(xml, { status: 200, headers: { "Content-Type": "application/xml" } });
+  return new Response(xml, {
+    status: 200,
+    headers: { "Content-Type": "application/xml", ETag: '"test-etag"' },
+  });
 }

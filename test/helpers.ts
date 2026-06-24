@@ -19,11 +19,12 @@ export class MemoryRepository implements ArticleRepository {
     return this.state.get(key) ?? null;
   }
 
-  async seed(entries: SitemapArticle[], now: string): Promise<void> {
+  async seed(entries: SitemapArticle[], now: string, sitemapEtag?: string): Promise<void> {
     this.insert(entries, "seeded");
     this.state.set("initialized_at", now);
     this.state.set("last_run_at", now);
     this.state.set("last_successful_run_at", now);
+    if (sitemapEtag) this.state.set("sitemap_etag", sitemapEtag);
   }
 
   async discover(entries: SitemapArticle[], now: string): Promise<void> {
@@ -75,9 +76,10 @@ export class MemoryRepository implements ArticleRepository {
     article.nextAttemptAt = nextAttemptAt;
   }
 
-  async markRunSuccessful(now: string): Promise<void> {
+  async markRunSuccessful(now: string, sitemapEtag?: string): Promise<void> {
     this.state.set("last_run_at", now);
     this.state.set("last_successful_run_at", now);
+    if (sitemapEtag) this.state.set("sitemap_etag", sitemapEtag);
   }
 
   async health(): Promise<HealthSnapshot> {
