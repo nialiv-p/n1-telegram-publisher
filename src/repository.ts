@@ -8,7 +8,6 @@ import type {
 const STATE_INITIALIZED_AT = "initialized_at";
 const STATE_LAST_RUN_AT = "last_run_at";
 const STATE_LAST_SUCCESSFUL_RUN_AT = "last_successful_run_at";
-const STATE_SITEMAP_ETAG = "sitemap_etag";
 const URL_LOOKUP_BATCH_SIZE = 75;
 const ROWS_PER_INSERT = 10;
 const STATEMENTS_PER_BATCH = 25;
@@ -39,16 +38,13 @@ export class D1ArticleRepository implements ArticleRepository {
     return row?.value ?? null;
   }
 
-  async seed(entries: SitemapArticle[], now: string, sitemapEtag?: string): Promise<void> {
+  async seed(entries: SitemapArticle[], now: string): Promise<void> {
     await this.insertEntries(entries, "seeded", now);
     const statements = [
       stateStatement(this.db, STATE_INITIALIZED_AT, now),
       stateStatement(this.db, STATE_LAST_RUN_AT, now),
       stateStatement(this.db, STATE_LAST_SUCCESSFUL_RUN_AT, now),
     ];
-    if (sitemapEtag) {
-      statements.push(stateStatement(this.db, STATE_SITEMAP_ETAG, sitemapEtag));
-    }
     await this.db.batch(statements);
   }
 
@@ -142,14 +138,11 @@ export class D1ArticleRepository implements ArticleRepository {
       .run();
   }
 
-  async markRunSuccessful(now: string, sitemapEtag?: string): Promise<void> {
+  async markRunSuccessful(now: string): Promise<void> {
     const statements = [
       stateStatement(this.db, STATE_LAST_RUN_AT, now),
       stateStatement(this.db, STATE_LAST_SUCCESSFUL_RUN_AT, now),
     ];
-    if (sitemapEtag) {
-      statements.push(stateStatement(this.db, STATE_SITEMAP_ETAG, sitemapEtag));
-    }
     await this.db.batch(statements);
   }
 

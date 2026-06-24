@@ -25,7 +25,7 @@ describe("D1 repository batching", () => {
       article(`https://n1info.rs/vesti/article-${index}/`, index),
     );
 
-    await repository.seed(entries, "2026-06-24T12:00:00.000Z", '"etag"');
+    await repository.seed(entries, "2026-06-24T12:00:00.000Z");
 
     const inserts = database.statements.filter((statement) => statement.sql.includes("INSERT OR IGNORE"));
     expect(inserts).toHaveLength(3);

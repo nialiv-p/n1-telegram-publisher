@@ -8,7 +8,6 @@ import type { ArticleRepository, Env, SitemapArticle } from "./types";
 const MAX_ARTICLES_PER_RUN = 10;
 const MAX_ATTEMPTS = 5;
 const STALE_SENDING_AFTER_MS = 10 * 60 * 1000;
-const STATE_SITEMAP_ETAG = "sitemap_etag";
 
 export interface ServiceDependencies {
   repository: ArticleRepository;
@@ -29,20 +28,13 @@ export async function runScheduled(
     sleep: overrides.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))),
   };
 
-  const previousEtag = await dependencies.repository.getState(STATE_SITEMAP_ETAG);
-  const sitemap = await fetchSitemap(dependencies.fetchImpl, previousEtag);
+  const sitemap = await fetchSitemap(dependencies.fetchImpl);
   const runAt = dependencies.now().toISOString();
-  if (sitemap.notModified) {
-    await dependencies.repository.markRunSuccessful(runAt);
-    log("info", "sitemap_not_modified", {});
-    return;
-  }
-
-  const entries = parseSitemap(sitemap.xml);
+  const entries = parseSitemap(sitemap);
   const initializedAt = await dependencies.repository.getState("initialized_at");
 
   if (!initializedAt) {
-    await dependencies.repository.seed(entries, runAt, sitemap.etag);
+    await dependencies.repository.seed(entries, runAt);
     log("info", "initial_seed_completed", { count: entries.length });
     return;
   }
@@ -78,7 +70,7 @@ export async function runScheduled(
   }
 
   const completedAt = dependencies.now().toISOString();
-  await dependencies.repository.markRunSuccessful(completedAt, sitemap.etag);
+  await dependencies.repository.markRunSuccessful(completedAt);
   log("info", "scheduled_run_completed", { discovered: entries.length, processed: ready.length });
 }
 
@@ -99,38 +91,18 @@ async function publishArticle(
   );
 }
 
-interface SitemapResponse {
-  notModified: boolean;
-  xml: string;
-  etag?: string;
-}
-
-async function fetchSitemap(
-  fetchImpl: typeof fetch,
-  previousEtag: string | null,
-): Promise<SitemapResponse> {
-  const headers: Record<string, string> = {
-    Accept: "application/xml,text/xml",
-    "User-Agent": "N1TelegramPublisher/1.0 (+https://workers.dev)",
-  };
-  if (previousEtag) {
-    headers["If-None-Match"] = previousEtag;
-  }
+async function fetchSitemap(fetchImpl: typeof fetch): Promise<string> {
   const response = await fetchImpl(SITEMAP_URL, {
-    headers,
+    headers: {
+      Accept: "application/xml,text/xml",
+      "User-Agent": "N1TelegramPublisher/1.0 (+https://workers.dev)",
+    },
     signal: AbortSignal.timeout(15_000),
   });
-  if (response.status === 304) {
-    return { notModified: true, xml: "", etag: previousEtag ?? undefined };
-  }
   if (!response.ok) {
     throw new Error(`Sitemap returned HTTP ${response.status}`);
   }
-  return {
-    notModified: false,
-    xml: await response.text(),
-    etag: response.headers.get("etag") ?? undefined,
-  };
+  return response.text();
 }
 
 async function recordFailure(
