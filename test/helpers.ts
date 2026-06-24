@@ -54,6 +54,16 @@ export class MemoryRepository implements ArticleRepository {
     return true;
   }
 
+  async updateMetadata(
+    url: string,
+    description: string | undefined,
+    imageUrl: string | undefined,
+  ): Promise<void> {
+    const article = this.requireArticle(url);
+    article.description = description ?? article.description;
+    article.imageUrl = imageUrl ?? article.imageUrl;
+  }
+
   async markSent(url: string, messageId: number): Promise<void> {
     const article = this.requireArticle(url);
     article.status = "sent";

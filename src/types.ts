@@ -30,6 +30,12 @@ export interface StoredArticle extends NewsArticle {
   attempts: number;
 }
 
+export interface ArticleEnrichment {
+  url: string;
+  description?: string;
+  imageUrl?: string;
+}
+
 export interface HealthSnapshot {
   initializedAt: string | null;
   lastRunAt: string | null;
@@ -46,6 +52,12 @@ export interface ArticleRepository {
   recoverStaleSending(staleBefore: string, now: string): Promise<void>;
   listReady(now: string, limit: number): Promise<StoredArticle[]>;
   claim(url: string, now: string): Promise<boolean>;
+  updateMetadata(
+    url: string,
+    description: string | undefined,
+    imageUrl: string | undefined,
+    now: string,
+  ): Promise<void>;
   markSent(url: string, messageId: number, now: string): Promise<void>;
   markFailure(
     url: string,

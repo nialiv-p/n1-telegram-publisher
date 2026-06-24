@@ -1,14 +1,14 @@
 # N1 → Telegram
 
-GitHub Actions загружает публичную RSS-ленту `n1info.rs/feed/` каждые пять минут и передаёт её в защищённый endpoint Cloudflare Worker. Worker находит новые сербоязычные статьи, хранит состояние в D1 и публикует их в Telegram-канале. Первый запуск только запоминает текущие статьи, поэтому старые новости не заполнят канал.
+GitHub Actions загружает публичную RSS-ленту `n1info.rs/feed/` каждые пять минут и передаёт её в защищённый endpoint Cloudflare Worker. Worker возвращает до 10 действительно новых URL, после чего GitHub Actions извлекает с этих страниц полный вводный абзац и отправляет обогащённые записи Worker для публикации. Первый запуск только запоминает текущие статьи, поэтому старые новости не заполнят канал.
 
-Такое разделение необходимо, потому что N1 блокирует исходящие запросы сети Cloudflare Workers. Worker сам не обращается к N1; GitHub Actions передаёт ему готовый RSS по HTTPS с общим секретом.
+Такое разделение необходимо, потому что N1 блокирует исходящие запросы сети Cloudflare Workers. Worker сам не обращается к N1; все публичные страницы загружает GitHub Actions, а запросы `/discover` и `/publish` защищены общим секретом.
 
 ## Что публикуется
 
 Разрешены разделы `vesti`, `svet`, `magazin`, `biznis`, `region`, `kultura`, `kolumne` и `zeleni-kutak`. Английские материалы, видео, анонсы передач, `n1-direktno` и неизвестные разделы исключаются.
 
-Пост содержит изображение, заголовок, краткое описание и ссылку на оригинал. Если изображение недоступно, Worker автоматически отправляет текстовый пост.
+Пост содержит изображение, заголовок, полный лид статьи и ссылку на оригинал. Если лид или страница недоступны, используется RSS-описание; если изображение недоступно, Worker автоматически отправляет текстовый пост.
 
 ## Подготовка Telegram
 
@@ -38,7 +38,7 @@ npx wrangler d1 migrations apply n1-telegram-publisher --remote
 npx wrangler secret put TELEGRAM_BOT_TOKEN
 ```
 
-Создайте случайный секрет для endpoint `/ingest`:
+Создайте случайный секрет для endpoint `/discover` и `/publish`:
 
 ```bash
 openssl rand -hex 32
@@ -84,14 +84,20 @@ npx wrangler d1 migrations apply n1-telegram-publisher --local
 npm run dev
 ```
 
-Передайте RSS в локальный Worker отдельной командой:
+Передайте RSS в локальный Worker, затем опубликуйте найденные записи:
 
 ```bash
 curl -fsSL https://n1info.rs/feed/ -o /tmp/n1-feed.xml
-curl -X POST http://localhost:8787/ingest \
+curl -X POST http://localhost:8787/discover \
   -H "Authorization: Bearer your_local_ingest_secret" \
   -H "Content-Type: application/rss+xml" \
-  --data-binary @/tmp/n1-feed.xml
+  --data-binary @/tmp/n1-feed.xml \
+  -o /tmp/discovery.json
+node scripts/enrich-articles.mjs /tmp/discovery.json /tmp/enriched.json
+curl -X POST http://localhost:8787/publish \
+  -H "Authorization: Bearer your_local_ingest_secret" \
+  -H "Content-Type: application/json" \
+  --data-binary @/tmp/enriched.json
 ```
 
 Используйте отдельный тестовый канал, поскольку запрос действительно может отправить сообщение.
@@ -131,6 +137,6 @@ npx wrangler d1 execute n1-telegram-publisher --remote --command "UPDATE article
 - Если GitHub Actions не смог загрузить RSS, Worker не вызывается и очередь не изменяется.
 - Описание и изображение берутся непосредственно из RSS, поэтому Worker не загружает HTML-страницы статей.
 - За один запуск отправляется не более 10 статей, от старых к новым. Между сообщениями выдерживается пауза для соблюдения лимитов Telegram.
-- `/ingest` принимает только запросы с правильным `INGEST_SECRET` и ограничивает RSS размером 1 МБ.
+- `/discover` и `/publish` принимают только запросы с правильным `INGEST_SECRET`; размер запроса ограничен 1 МБ.
 - Уже известный нормализованный URL повторно не публикуется.
 - После неоднозначного сетевого сбоя отправка повторяется. Это предотвращает потерю новости, но в редком случае Telegram мог принять первый запрос и создать дубль.

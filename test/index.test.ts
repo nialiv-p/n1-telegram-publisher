@@ -40,7 +40,7 @@ describe("HTTP interface", () => {
 
   it("rejects unauthenticated feed ingestion", async () => {
     const response = await worker.fetch?.(
-      new Request("https://worker.example/ingest", { method: "POST", body: "<rss/>" }),
+      new Request("https://worker.example/discover", { method: "POST", body: "<rss/>" }),
       { INGEST_SECRET: "ingest-secret" } as Env,
     );
     expect(response?.status).toBe(401);
@@ -48,7 +48,7 @@ describe("HTTP interface", () => {
 
   it("rejects oversized feed ingestion before reading D1", async () => {
     const response = await worker.fetch?.(
-      new Request("https://worker.example/ingest", {
+      new Request("https://worker.example/discover", {
         method: "POST",
         headers: {
           Authorization: "Bearer ingest-secret",

@@ -110,6 +110,23 @@ export class D1ArticleRepository implements ArticleRepository {
     return (result.meta.changes ?? 0) === 1;
   }
 
+  async updateMetadata(
+    url: string,
+    description: string | undefined,
+    imageUrl: string | undefined,
+    now: string,
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE articles
+         SET description = COALESCE(?, description), image_url = COALESCE(?, image_url),
+             updated_at = ?
+         WHERE url = ? AND status IN ('pending', 'retry')`,
+      )
+      .bind(description ?? null, imageUrl ?? null, now, url)
+      .run();
+  }
+
   async markSent(url: string, messageId: number, now: string): Promise<void> {
     await this.db
       .prepare(

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ingestFeed } from "../src/service";
+import { discoverFeed, publishEnrichedArticles } from "../src/service";
 import type { Env } from "../src/types";
 import { feedXml, MemoryRepository } from "./helpers";
 
@@ -11,12 +11,12 @@ const env = {
   TELEGRAM_CHANNEL_ID: "@test-channel",
 } as Env;
 
-describe("scheduled service", () => {
+describe("feed discovery and publishing", () => {
   it("seeds the first feed without publishing", async () => {
     const repository = new MemoryRepository();
     const fetchImpl = vi.fn() as unknown as typeof fetch;
 
-    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
+    await discoverFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
 
     expect(repository.articles.get(ARTICLE_URL)?.status).toBe("seeded");
     expect(repository.state.get("initialized_at")).toBe(NOW.toISOString());
@@ -27,8 +27,8 @@ describe("scheduled service", () => {
     const repository = initializedRepository();
     const fetchImpl = routeFetch({ telegramMessageId: 123 });
 
-    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
-    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
+    await runCycle(repository, fetchImpl);
+    await runCycle(repository, fetchImpl);
 
     expect(repository.articles.get(ARTICLE_URL)).toMatchObject({
       status: "sent",
@@ -40,7 +40,7 @@ describe("scheduled service", () => {
     const repository = initializedRepository();
     const fetchImpl = routeFetch({ rejectPhoto: true, telegramMessageId: 456 });
 
-    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
+    await runCycle(repository, fetchImpl);
 
     const calls = telegramCalls(fetchImpl).map(([input]) => String(input));
     expect(calls).toEqual([
@@ -50,18 +50,18 @@ describe("scheduled service", () => {
     expect(repository.articles.get(ARTICLE_URL)).toMatchObject({ status: "sent", messageId: 456 });
   });
 
-  it("uses RSS metadata without fetching the article page", async () => {
+  it("uses the enriched article lead instead of the RSS excerpt", async () => {
     const repository = initializedRepository();
     const fetchImpl = routeFetch({ telegramMessageId: 789 });
 
-    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
+    await runCycle(repository, fetchImpl, "Potpun uvodni pasus završava se rečenicom.");
 
     const telegramCall = telegramCalls(fetchImpl)[0];
     const body = JSON.parse(String(telegramCall?.[1]?.body)) as {
       caption?: string;
       text?: string;
     };
-    expect(body.caption ?? body.text).toContain("Kratak opis");
+    expect(body.caption ?? body.text).toContain("Potpun uvodni pasus završava se rečenicom.");
     expect(repository.articles.get(ARTICLE_URL)?.status).toBe("sent");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
@@ -70,7 +70,7 @@ describe("scheduled service", () => {
     const repository = initializedRepository();
     const fetchImpl = routeFetch({ rateLimited: true });
 
-    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
+    await runCycle(repository, fetchImpl);
     expect(repository.articles.get(ARTICLE_URL)).toMatchObject({
       status: "retry",
       attempts: 1,
@@ -83,7 +83,7 @@ describe("scheduled service", () => {
     article.attempts = 4;
     article.nextAttemptAt = null;
 
-    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
+    await runCycle(repository, fetchImpl);
     expect(repository.articles.get(ARTICLE_URL)).toMatchObject({
       status: "failed",
       attempts: 5,
@@ -100,7 +100,7 @@ describe("scheduled service", () => {
     }));
     const fetchImpl = routeFetch({ telegramMessageId: 100 });
 
-    await ingestFeed(env, feedXml(entries), dependencies(repository, fetchImpl));
+    await runCycle(repository, fetchImpl, undefined, feedXml(entries));
 
     const sent = [...repository.articles.values()].filter((article) => article.status === "sent");
     const pending = [...repository.articles.values()].filter((article) => article.status === "pending");
@@ -116,7 +116,7 @@ describe("scheduled service", () => {
     const fetchImpl = vi.fn() as unknown as typeof fetch;
 
     await expect(
-      ingestFeed(env, "<invalid />", dependencies(repository, fetchImpl)),
+      discoverFeed(env, "<invalid />", dependencies(repository, fetchImpl)),
     ).rejects.toThrow(/rss\/item is missing/);
     expect(repository.articles).toHaveLength(0);
     expect(repository.state.get("last_run_at")).toBeUndefined();
@@ -126,7 +126,7 @@ describe("scheduled service", () => {
     const repository = initializedRepository();
     const fetchImpl = routeFetch({ telegramNetworkError: true });
 
-    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
+    await runCycle(repository, fetchImpl);
 
     expect(repository.articles.get(ARTICLE_URL)).toMatchObject({ status: "retry", attempts: 1 });
   });
@@ -135,7 +135,7 @@ describe("scheduled service", () => {
     const repository = initializedRepository();
     const fetchImpl = routeFetch({ telegramServerError: true });
 
-    await ingestFeed(env, oneArticleFeed(), dependencies(repository, fetchImpl));
+    await runCycle(repository, fetchImpl);
 
     expect(repository.articles.get(ARTICLE_URL)).toMatchObject({ status: "retry", attempts: 1 });
   });
@@ -148,6 +148,25 @@ function dependencies(repository: MemoryRepository, fetchImpl: typeof fetch) {
     now: () => new Date(NOW),
     sleep: async () => undefined,
   };
+}
+
+async function runCycle(
+  repository: MemoryRepository,
+  fetchImpl: typeof fetch,
+  description?: string,
+  feed = oneArticleFeed(),
+): Promise<void> {
+  const deps = dependencies(repository, fetchImpl);
+  const ready = await discoverFeed(env, feed, deps);
+  await publishEnrichedArticles(
+    env,
+    ready.map((article) => ({
+      url: article.url,
+      description: description ?? article.description,
+      imageUrl: article.imageUrl,
+    })),
+    deps,
+  );
 }
 
 function initializedRepository(): MemoryRepository {

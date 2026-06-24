@@ -17,13 +17,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
+      - name: Check out enrichment script
+        uses: actions/checkout@v4
+
       - name: Fetch N1 RSS feed
         run: >-
           curl --fail --silent --show-error --location
           --retry 3 --retry-all-errors --max-time 30
           https://n1info.rs/feed/ --output /tmp/n1-feed.xml
 
-      - name: Send feed to Worker
+      - name: Discover new articles
         env:
           INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
           WORKER_URL: https://n1-telegram-publisher.n1newsfetcher.workers.dev
@@ -34,4 +37,21 @@ jobs:
           --header "Authorization: Bearer ${INGEST_SECRET}"
           --header "Content-Type: application/rss+xml"
           --data-binary @/tmp/n1-feed.xml
-          "${WORKER_URL}/ingest"
+          "${WORKER_URL}/discover"
+          --output /tmp/discovery.json
+
+      - name: Enrich new articles
+        run: node scripts/enrich-articles.mjs /tmp/discovery.json /tmp/enriched.json
+
+      - name: Publish enriched articles
+        env:
+          INGEST_SECRET: ${{ secrets.INGEST_SECRET }}
+          WORKER_URL: https://n1-telegram-publisher.n1newsfetcher.workers.dev
+        run: >-
+          curl --fail-with-body --silent --show-error
+          --retry 3 --retry-all-errors --max-time 90
+          --request POST
+          --header "Authorization: Bearer ${INGEST_SECRET}"
+          --header "Content-Type: application/json"
+          --data-binary @/tmp/enriched.json
+          "${WORKER_URL}/publish"
